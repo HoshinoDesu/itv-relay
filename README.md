@@ -113,6 +113,40 @@ cargo build --target aarch64-unknown-linux-gnu --release
 # 产物: target/aarch64-unknown-linux-gnu/release/itv-relay
 ```
 
+## Docker
+
+提供多架构镜像（`linux/amd64` + `linux/arm64`），内含 ffmpeg 与 itv-relay，推送到 `ghcr.io/hoshinodesu/itv-relay`。推送到 main 分支即自动触发 GitHub Actions 构建发布。
+
+拉取：
+
+```bash
+docker pull ghcr.io/hoshinodesu/itv-relay:latest
+```
+
+运行（把 config.toml 和频道清单 m3u 挂载到容器 /data 目录）：
+
+```bash
+docker run -d \
+  --name itv-relay \
+  -p 8088:8088 \
+  -v /path/to/relay:/data \
+  -e RUST_LOG=itv_relay=info,state=info,ffmpeg=warn \
+  ghcr.io/hoshinodesu/itv-relay:latest
+```
+
+宿主机 `/path/to/relay` 目录需包含：
+- `config.toml` — 配置文件
+- `rtp2html.m3u` — 频道清单
+- config.toml 中 `playlist_path` 指向 `/data/rtp2html.m3u`（容器内路径）
+
+注意：容器内 `hostname -I` 返回容器 IP，建议在 config.toml 显式设置 `base_url = "http://<宿主外网IP>:8088"`，否则母列表播放地址会指向容器内网 IP 导致外部播放器无法访问。
+
+镜像源码与构建配置见仓库 `Dockerfile` 与 `.github/workflows/docker.yml`，也可自行本地构建：
+
+```bash
+docker build -t itv-relay .
+```
+
 ## 部署
 
 把二进制、config.toml、频道清单 m3u 放到目标机器同一目录，例如 `/root/relay/`：

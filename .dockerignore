@@ -1,0 +1,11 @@
+target
+.git
+.github
+.cargo
+.claude
+*.log
+*.md
+Dockerfile
+.dockerignore
+rpi5_exp*.sh
+tc_test.sh
