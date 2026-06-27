@@ -7,9 +7,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root/relay
+WorkingDirectory=/opt/itv-relay
 Environment=RUST_LOG=itv_relay=info,state=info,ffmpeg=warn
-ExecStart=/root/relay/itv-relay /root/relay/config.toml
+ExecStart=/opt/itv-relay/itv-relay /opt/itv-relay/config.toml
 Restart=on-failure
 RestartSec=3
 

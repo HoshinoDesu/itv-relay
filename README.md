@@ -54,7 +54,7 @@ GET /play/tv-N     -> 一个 HTTP-TS 流会话:
 ## 配置
 
 ```toml
-playlist_path = "/root/relay/playlist.m3u"
+playlist_path = "/opt/itv-relay/playlist.m3u"
 listen = "0.0.0.0:8088"
 sample_interval_s = 1.0
 startup_ladder = 0        # 起播档 (0=直通)
@@ -165,10 +165,10 @@ compose 配置把 `./relay` 目录挂载到容器 `/data`，自动设 `RUST_LOG`
 
 ## 部署
 
-把二进制、config.toml、频道清单 m3u 放到目标机器同一目录，例如 `/root/relay/`：
+把二进制、config.toml、频道清单 m3u 放到目标机器同一目录，例如 `/opt/itv-relay/`：
 
 ```
-/root/relay/
+/opt/itv-relay/
   itv-relay
   config.toml
   playlist.m3u
@@ -179,14 +179,14 @@ compose 配置把 `./relay` 目录挂载到容器 `/data`，自动设 `RUST_LOG`
 run.sh：
 ```bash
 #!/bin/bash
-cd /root/relay
+cd /opt/itv-relay
 export RUST_LOG=itv_relay=info,state=info,ffmpeg=warn
 exec ./itv-relay config.toml
 ```
 
 后台启动：
 ```bash
-setsid -f /root/relay/run.sh </dev/null >/root/relay/relay.log 2>&1
+setsid -f /opt/itv-relay/run.sh </dev/null >/opt/itv-relay/relay.log 2>&1
 ```
 
 停止：
@@ -201,7 +201,7 @@ pkill -9 -x itv-relay; pkill -9 ffmpeg
 仓库提供 `itv-relay.service`，开机自启 + 崩溃重启：
 
 ```bash
-# 拷 unit 文件 (假设二进制在 /root/relay/)
+# 拷 unit 文件 (假设二进制在 /opt/itv-relay/)
 cp itv-relay.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now itv-relay
@@ -211,7 +211,7 @@ systemctl status itv-relay     # 状态
 journalctl -u itv-relay -f     # 日志
 ```
 
-unit 默认配置 `WorkingDirectory=/root/relay`、`ExecStart=/root/relay/itv-relay /root/relay/config.toml`，按需改路径。`KillMode=control-group` 确保服务停止时 ffmpeg 子进程一并清理。
+unit 默认配置 `WorkingDirectory=/opt/itv-relay`、`ExecStart=/opt/itv-relay/itv-relay /opt/itv-relay/config.toml`，按需改路径。`KillMode=control-group` 确保服务停止时 ffmpeg 子进程一并清理。
 
 ## 限速测试
 
