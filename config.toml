@@ -1,0 +1,65 @@
+# ITV 动态码率中继配置 (pipe HTTP-TS 版)
+
+playlist_path = "/root/rtp2html.m3u"
+listen = "0.0.0.0:8088"
+sample_interval_s = 1.0
+# 起播档=0(直通)
+startup_ladder = 0
+startup_hold_s = 8.0
+
+# 码率档位: 索引 0=直通(网络好), 越大越低。纯码率档, 不降分辨率 (减CPU负担)。
+# 5 档: 8M / 5M / 3M / 2M / 1M (档0直通源~8M)
+[[ladder]]
+name = "0-passthrough-8m"
+mode = "copy"
+
+[[ladder]]
+name = "1-1080p-5000k"
+mode = "encode"
+width = 1920
+height = 1080
+bitrate = 5000
+maxrate = 5800
+bufsize = 11000
+preset = "ultrafast"
+audio_bitrate = 128
+
+[[ladder]]
+name = "2-1080p-3000k"
+mode = "encode"
+width = 1920
+height = 1080
+bitrate = 3000
+maxrate = 3500
+bufsize = 6500
+preset = "ultrafast"
+audio_bitrate = 128
+
+[[ladder]]
+name = "3-1080p-2000k"
+mode = "encode"
+width = 1920
+height = 1080
+bitrate = 2000
+maxrate = 2400
+bufsize = 4500
+preset = "ultrafast"
+audio_bitrate = 128
+
+[[ladder]]
+name = "4-1080p-1000k"
+mode = "encode"
+width = 1920
+height = 1080
+bitrate = 1000
+maxrate = 1200
+bufsize = 2500
+preset = "ultrafast"
+audio_bitrate = 128
+
+[congestion]
+down_ratio = 0.70
+down_hold_s = 4.0
+up_ratio = 0.95
+up_hold_s = 15.0
+down_cooldown_s = 8.0

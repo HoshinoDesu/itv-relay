@@ -1,0 +1,20 @@
+# Build
+/target
+**/*.rs.bk
+
+# Local toolchain config (含本地交叉编译环境)
+/.cargo
+
+# Claude Code 工作区
+/.claude
+
+# 项目内部文档 (含敏感凭据, 不公开)
+/AGENTS.md
+
+# 早期实验脚本 (已弃用)
+/rpi5_exp*.sh
+/tc_test.sh
+
+# 运行产物
+*.log
+relay.log
