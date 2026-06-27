@@ -1,6 +1,6 @@
 # ITV 动态码率中继配置 (pipe HTTP-TS 版)
 
-playlist_path = "/root/rtp2html.m3u"
+playlist_path = "/root/playlist.m3u"
 listen = "0.0.0.0:8088"
 sample_interval_s = 1.0
 # 起播档=0(直通)

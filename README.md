@@ -54,7 +54,7 @@ GET /play/tv-N     -> 一个 HTTP-TS 流会话:
 ## 配置
 
 ```toml
-playlist_path = "/root/relay/rtp2html.m3u"
+playlist_path = "/root/relay/playlist.m3u"
 listen = "0.0.0.0:8088"
 sample_interval_s = 1.0
 startup_ladder = 0        # 起播档 (0=直通)
@@ -136,8 +136,8 @@ docker run -d \
 
 宿主机 `/path/to/relay` 目录需包含：
 - `config.toml` — 配置文件
-- `rtp2html.m3u` — 频道清单
-- config.toml 中 `playlist_path` 指向 `/data/rtp2html.m3u`（容器内路径）
+- `playlist.m3u` — 频道清单
+- config.toml 中 `playlist_path` 指向 `/data/playlist.m3u`（容器内路径）
 
 注意：容器内 `hostname -I` 返回容器 IP，建议在 config.toml 显式设置 `base_url = "http://<宿主外网IP>:8088"`，否则母列表播放地址会指向容器内网 IP 导致外部播放器无法访问。
 
@@ -155,7 +155,7 @@ docker build -t itv-relay .
 # 工作目录放置:
 #   docker-compose.yml    (仓库提供)
 #   relay/config.toml
-#   relay/rtp2html.m3u
+#   relay/playlist.m3u
 docker compose up -d
 docker compose logs -f
 docker compose down
@@ -171,7 +171,7 @@ compose 配置把 `./relay` 目录挂载到容器 `/data`，自动设 `RUST_LOG`
 /root/relay/
   itv-relay
   config.toml
-  rtp2html.m3u
+  playlist.m3u
   run.sh
   tc_limit.sh
 ```
