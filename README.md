@@ -147,6 +147,22 @@ docker run -d \
 docker build -t itv-relay .
 ```
 
+### docker-compose
+
+仓库提供 `docker-compose.yml`，更简洁的启动方式：
+
+```bash
+# 工作目录放置:
+#   docker-compose.yml    (仓库提供)
+#   relay/config.toml
+#   relay/rtp2html.m3u
+docker compose up -d
+docker compose logs -f
+docker compose down
+```
+
+compose 配置把 `./relay` 目录挂载到容器 `/data`，自动设 `RUST_LOG` 和 `restart: unless-stopped`。
+
 ## 部署
 
 把二进制、config.toml、频道清单 m3u 放到目标机器同一目录，例如 `/root/relay/`：
