@@ -196,6 +196,25 @@ pkill -9 -x itv-relay; pkill -9 ffmpeg
 
 注意：`pkill -f itv-relay` 会匹配到含该字串的 SSH 命令行自身导致 exit 255，用 `pkill -x itv-relay` 精确匹配进程名。
 
+### systemd
+
+仓库提供 `itv-relay.service`，开机自启 + 崩溃重启：
+
+```bash
+# 拷 unit 文件 (假设二进制在 /root/relay/)
+cp itv-relay.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now itv-relay
+
+# 操作
+systemctl status itv-relay     # 状态
+journalctl -u itv-relay -f     # 日志
+```
+
+unit 默认配置 `WorkingDirectory=/root/relay`、`ExecStart=/root/relay/itv-relay /root/relay/config.toml`，按需改路径。`KillMode=control-group` 确保服务停止时 ffmpeg 子进程一并清理。
+
+## 限速测试
+
 ## 限速测试
 
 中继侧拥塞判断靠缓冲池斜率，不限速时客户端拉得快、池不涨不会触发降档。模拟限流需用 tc 限出站流量：

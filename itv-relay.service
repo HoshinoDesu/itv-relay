@@ -1,0 +1,23 @@
+[Unit]
+Description=itv-relay dynamic bitrate relay
+Documentation=https://github.com/HoshinoDesu/itv-relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/relay
+Environment=RUST_LOG=itv_relay=info,state=info,ffmpeg=warn
+ExecStart=/root/relay/itv-relay /root/relay/config.toml
+Restart=on-failure
+RestartSec=3
+
+# ffmpeg 子进程随主进程退出: 进程组信号已由 itv-relay 处理,
+# 若异常退出残留, KillMode=control-group 清理同组
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target
