@@ -1,6 +1,6 @@
 # itv-relay
 
-RPi5 上运行的 Rust 中继服务，把局域网 ITV 源（RTSP-over-HTTP 代理）转成 pipe HTTP-TS 流对外服务。
+Rust 编写的 ITV 流中继服务，把局域网 ITV 源（RTSP-over-HTTP 代理）转成 pipe HTTP-TS 流对外服务。
 
 默认直通源流零 CPU 占用；外网带宽不足卡顿时自动多档降码率；网络恢复后逐级试探升回。播放器是机顶盒或单路 URL，无 ABR、无客户端回传——拥塞判断完全由中继侧自测完成。
 
@@ -98,13 +98,10 @@ http://上游源URL
 
 ## 编译
 
-RPi5 (BCM2712, 4xA76@2.4GHz, Debian 13/trixie)，ffmpeg 7.1.x 软编 libx264。
-软编 1080p ultrafast 约 280% CPU。硬编 h264_v4l2m2m 打不开（exit 234），硬解仅 HEVC 支持，源是 H264 用不上，纯软编。
-
-交叉编译（在 x86_64 Linux 上，不要在 RPi5 上编译）：
+依赖 ffmpeg（软编 libx264）。可本机直接编译，也可交叉编译到 aarch64 等目标架构：
 
 ```bash
-# 一次性环境
+# 交叉编译到 aarch64 (示例)
 sudo apt install gcc-aarch64-linux-gnu
 rustup target add aarch64-unknown-linux-gnu
 
@@ -112,7 +109,6 @@ rustup target add aarch64-unknown-linux-gnu
 [target.aarch64-unknown-linux-gnu]
 linker = "aarch64-linux-gnu-gcc"
 
-# 编译
 cargo build --target aarch64-unknown-linux-gnu --release
 # 产物: target/aarch64-unknown-linux-gnu/release/itv-relay
 ```
@@ -183,7 +179,7 @@ tc 配置要点：htb 限 8088 出站（`sport 8088`，不是 dport），SSH 等
 
 - encoder 码率不能运行时热改（FFmpeg 官方确认），换码率必须换 ffmpeg 实例。
 - 直通档起播需等源 GOP 关键帧，源端决定，约 2-5s 起播延迟，无法消除。
-- 编码档 `ultrafast` preset 画质偏粗，但 `faster/medium` 会让 RPi5 1080p 软编超 400% CPU 过载，不可用。
+- 编码档使用 `ultrafast` preset，画质偏粗，更高质量 preset 会显著增加软编 CPU 开销。
 
 ## 许可
 
