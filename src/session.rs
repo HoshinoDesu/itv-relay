@@ -177,7 +177,7 @@ async fn do_hot_switch(
     let (mut new_child, _rate) = spawn_and_rate(run, source).await?;
     let mut first = vec![0u8; 64 * 1024];
     let n = match new_child.stdout.as_mut() {
-        Some(stdout) => tokio::time::timeout(Duration::from_secs(5), stdout.read(&mut first)).await,
+        Some(stdout) => tokio::time::timeout(Duration::from_secs(15), stdout.read(&mut first)).await,
         None => anyhow::bail!("no stdout"),
     };
     match n {

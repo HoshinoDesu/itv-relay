@@ -35,7 +35,7 @@ pub fn build(state: AppState) -> Router {
 
 async fn playlist(State(st): State<AppState>) -> Response {
     let chs = st.channels.read().await;
-    let body = render_master(&chs, &st.base_url, &st.logo_base);
+    let body = render_master(&chs, &st.base_url, &st.logo_base, st.cfg.epg_url.as_deref());
     (
         StatusCode::OK,
         [

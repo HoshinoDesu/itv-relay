@@ -15,6 +15,9 @@ pub struct Config {
     /// 台标 logo 源 base (jsdelivr 加速 fanmingming/live)
     #[serde(default = "default_logo_base")]
     pub logo_base: String,
+    /// EPG 节目单 XML 地址 (写入 #EXTM3U x-tvg-url)
+    #[serde(default)]
+    pub epg_url: Option<String>,
     /// HLS 段输出目录 (pipe模式已不用, 保留兼容旧配置)
     #[serde(default)]
     pub hls_dir: Option<PathBuf>,

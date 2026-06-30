@@ -56,8 +56,11 @@ fn extract_attr(line: &str, attr: &str) -> Option<String> {
 }
 
 /// 生成播放列表 m3u: 绝对地址 play/tv-{index} + jsdelivr 加速的 tvg-logo
-pub fn render_master(channels: &[Channel], base_url: &str, logo_base: &str) -> String {
-    let mut s = String::from("#EXTM3U\n");
+pub fn render_master(channels: &[Channel], base_url: &str, logo_base: &str, epg_url: Option<&str>) -> String {
+    let mut s = match epg_url {
+        Some(url) => format!("#EXTM3U x-tvg-url=\"{url}\"\n"),
+        None => String::from("#EXTM3U\n"),
+    };
     for ch in channels {
         let logo = logo_url(&ch.display_name, logo_base);
         s.push_str(&format!(
