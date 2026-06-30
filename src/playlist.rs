@@ -11,6 +11,8 @@ pub struct Channel {
     pub display_name: String,
     /// 上游源 URL
     pub source_url: String,
+    /// EPG 匹配 ID (来自 tvg-id 属性)
+    pub tvg_id: Option<String>,
 }
 
 /// 解析 m3u: 每行 #EXTINF 含 tvg-name 或末尾逗号后频道名, 下一行是 URL
@@ -22,6 +24,7 @@ pub fn load(path: &Path) -> Result<Vec<Channel>> {
 pub fn parse(raw: &str) -> Vec<Channel> {
     let mut out = Vec::new();
     let mut pending_name: Option<String> = None;
+    let mut pending_tvg_id: Option<String> = None;
     for line in raw.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -31,6 +34,7 @@ pub fn parse(raw: &str) -> Vec<Channel> {
             let name = extract_attr(line, "tvg-name")
                 .or_else(|| line.rsplit_once(',').map(|(_, n)| n.trim().to_string()))
                 .unwrap_or_else(|| "unknown".to_string());
+            pending_tvg_id = extract_attr(line, "tvg-id");
             pending_name = Some(name);
         } else if line.starts_with('#') {
             continue;
@@ -40,6 +44,7 @@ pub fn parse(raw: &str) -> Vec<Channel> {
                     index: out.len() + 1,
                     display_name: name,
                     source_url: line.to_string(),
+                    tvg_id: pending_tvg_id.take(),
                 });
             }
         }
@@ -63,9 +68,13 @@ pub fn render_master(channels: &[Channel], base_url: &str, logo_base: &str, epg_
     };
     for ch in channels {
         let logo = logo_url(&ch.display_name, logo_base);
+        let tvg_id_attr = match &ch.tvg_id {
+            Some(id) => format!("tvg-id=\"{}\" ", id),
+            None => String::new(),
+        };
         s.push_str(&format!(
-            "#EXTINF:-1 tvg-name=\"{}\" tvg-logo=\"{}\",{}\n",
-            ch.display_name, logo, ch.display_name
+            "#EXTINF:-1 {}tvg-name=\"{}\" tvg-logo=\"{}\",{}\n",
+            tvg_id_attr, ch.display_name, logo, ch.display_name
         ));
         s.push_str(&format!("{}/play/tv-{}\n", base_url.trim_end_matches('/'), ch.index));
     }
