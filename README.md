@@ -252,4 +252,4 @@ tc 配置要点：htb 限 8088 出站（`sport 8088`，不是 dport），SSH 等
 
 ## 许可
 
-MIT
+GPL v3
