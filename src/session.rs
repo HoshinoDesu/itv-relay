@@ -1,10 +1,9 @@
 //! 单个播放会话: ffmpeg pipe → HTTP 响应, 含动态档位切换。
 //!
-//! v5 策略 (pool 字节斜率驱动):
-//! - Direct(直通): 测链路 link_estimate, 首降按带宽直跳合适档
-//! - Encode: 降只单步; 升单步试探 + 观察期回退到 last_stable + 退避锁
-//! - 切档统一走 hot_switch (spawn新→等首帧→clear池→kill旧)
-//! - 连续 3 次升档失败 → 暂停升档 30min
+//! v6 策略 (无卡顿切档):
+//! - 新 ffmpeg 在后台 spawn + 等首帧, 主循环持续读旧 ffmpeg 不中断
+//! - 新进程就绪后无缝替换 active child, 不清空 pool
+//! - MPEG-TS 自同步 + -copyts 保证 PTS 连续, 播放器无感切换
 
 use crate::config::{Config, Run};
 use crate::ffmpeg;
@@ -15,6 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 use tokio::process::Child;
+use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
 pub struct Session {
@@ -39,7 +39,7 @@ impl Session {
             .iter()
             .map(|r| {
                 if r.mode == "copy" {
-                    800_000 // 直通源 ~7.8Mbps 取保守
+                    800_000
                 } else {
                     ((r.bitrate + r.audio_bitrate) * 1000 / 8) as u64
                 }
@@ -49,7 +49,6 @@ impl Session {
         let mut cur_ladder = cfg.startup_ladder.min(max_index);
         let mut sm = StateMachine::new(CongestionCfg::from(cfg.as_ref()), max_index, ladder_bps.clone(), cur_ladder);
 
-        // active ffmpeg + 当前档
         let mut active: Option<Child>;
         let mut active_bps = ladder_bps[cur_ladder];
 
@@ -72,7 +71,43 @@ impl Session {
 
         let mut buf = vec![0u8; 64 * 1024];
 
+        let mut pending_switch: Option<oneshot::Receiver<Result<(Child, Vec<u8>, u64)>>> = None;
+        let mut pending_target: Option<usize> = None;
+
         loop {
+            // 检查后台切档是否就绪
+            if let Some(mut rx) = pending_switch.take() {
+                match rx.try_recv() {
+                    Ok(Ok((new_child, first_frame, rate))) => {
+                        let t = pending_target.take().unwrap();
+                        if let Some(mut old) = active.take() {
+                            tokio::spawn(async move {
+                                ffmpeg::kill_process_group(&mut old).await;
+                            });
+                        }
+                        writer.send(first_frame).await;
+                        active = Some(new_child);
+                        cur_ladder = t;
+                        active_bps = rate;
+                        sm.confirm_switch();
+                        info!(target: "session", "tv-{} 无缝切档完成 → 档{}", channel_idx, t);
+                    }
+                    Ok(Err(e)) => {
+                        warn!(target: "session", "tv-{} 后台切档失败: {e}", channel_idx);
+                        sm.rollback_switch();
+                        pending_target = None;
+                    }
+                    Err(oneshot::error::TryRecvError::Empty) => {
+                        pending_switch = Some(rx);
+                    }
+                    Err(oneshot::error::TryRecvError::Closed) => {
+                        warn!(target: "session", "tv-{} 切档任务异常退出", channel_idx);
+                        sm.rollback_switch();
+                        pending_target = None;
+                    }
+                }
+            }
+
             let child = match active.as_mut() {
                 Some(c) => c,
                 None => break,
@@ -99,7 +134,11 @@ impl Session {
                 }
             }
 
-            // 周期采样: pool 字节量 + 斜率 (诚实信号)
+            // 切档进行中时跳过采样 (confirm_switch 会重置 EWMA)
+            if pending_switch.is_some() {
+                continue;
+            }
+
             let now = Instant::now();
             if now.duration_since(last_sample) >= sample_iv {
                 let dt = now.duration_since(last_sample);
@@ -135,26 +174,14 @@ impl Session {
                             let tag = matches!(decision, Decision::RevertDown(_));
                             info!(target: "session", "tv-{} {} {}→{} (drain={}B/s pool={:.0}%)",
                                 channel_idx, if tag {"回退"} else {"降档"}, cur_ladder, t, drain_bps, backlog_ratio * 100.0);
-                            if let Err(e) = do_hot_switch(&mut active, &cfg.ladder[t], &source, &writer).await {
-                                warn!(target: "session", "切档 spawn 失败: {e}");
-                                sm.rollback_switch();
-                            } else {
-                                cur_ladder = t; active_bps = ladder_bps[t];
-                                sm.confirm_switch();
-                            }
+                            start_bg_switch(&cfg.ladder[t], &source, &mut pending_switch, &mut pending_target, t);
                         }
                     }
                     Decision::StepUp(t) => {
                         if t != cur_ladder {
                             info!(target: "session", "tv-{} 升档探测 {}→{} (drain={}B/s)",
                                 channel_idx, cur_ladder, t, drain_bps);
-                            if let Err(e) = do_hot_switch(&mut active, &cfg.ladder[t], &source, &writer).await {
-                                warn!(target: "session", "升档 spawn 失败: {e}");
-                                sm.rollback_switch();
-                            } else {
-                                cur_ladder = t; active_bps = ladder_bps[t];
-                                sm.confirm_switch();
-                            }
+                            start_bg_switch(&cfg.ladder[t], &source, &mut pending_switch, &mut pending_target, t);
                         }
                     }
                     Decision::Hold => {}
@@ -169,33 +196,36 @@ impl Session {
     }
 }
 
-/// hot_switch: spawn 新 ffmpeg → 等首帧 → clear 池 → kill 旧 → 发首帧。
-async fn do_hot_switch(
-    active: &mut Option<Child>,
+fn start_bg_switch(
     run: &Run,
     source: &str,
-    writer: &StreamWriter,
-) -> Result<()> {
-    let (mut new_child, _rate) = spawn_and_rate(run, source).await?;
+    pending: &mut Option<oneshot::Receiver<Result<(Child, Vec<u8>, u64)>>>,
+    target: &mut Option<usize>,
+    ladder: usize,
+) {
+    let (tx, rx) = oneshot::channel();
+    let run = run.clone();
+    let src = source.to_string();
+    tokio::spawn(async move {
+        let _ = tx.send(prepare_switch(&run, &src).await);
+    });
+    *pending = Some(rx);
+    *target = Some(ladder);
+}
+
+/// 后台准备新 ffmpeg: spawn + 等首帧, 不阻塞主读循环。
+async fn prepare_switch(run: &Run, source: &str) -> Result<(Child, Vec<u8>, u64)> {
+    let (mut child, rate) = spawn_and_rate(run, source).await?;
     let mut first = vec![0u8; 64 * 1024];
-    let n = match new_child.stdout.as_mut() {
+    let n = match child.stdout.as_mut() {
         Some(stdout) => tokio::time::timeout(Duration::from_secs(15), stdout.read(&mut first)).await,
         None => anyhow::bail!("no stdout"),
     };
     match n {
-        Ok(Ok(n)) if n > 0 => {
-            let drained = writer.clear().await;
-            if drained > 0 { info!(target:"session","hot_switch: 清空 {} 旧 chunk", drained); }
-            if let Some(mut old) = active.take() {
-                ffmpeg::kill_process_group(&mut old).await;
-            }
-            writer.send(first[..n].to_vec()).await;
-            *active = Some(new_child);
-            Ok(())
-        }
-        Ok(Ok(_)) => { ffmpeg::kill_process_group(&mut new_child).await; anyhow::bail!("EOF immediately"); }
-        Ok(Err(e)) => { ffmpeg::kill_process_group(&mut new_child).await; anyhow::bail!("read err: {e}"); }
-        Err(_) => { ffmpeg::kill_process_group(&mut new_child).await; anyhow::bail!("first frame timeout"); }
+        Ok(Ok(n)) if n > 0 => Ok((child, first[..n].to_vec(), rate)),
+        Ok(Ok(_)) => { ffmpeg::kill_process_group(&mut child).await; anyhow::bail!("EOF immediately"); }
+        Ok(Err(e)) => { ffmpeg::kill_process_group(&mut child).await; anyhow::bail!("read err: {e}"); }
+        Err(_) => { ffmpeg::kill_process_group(&mut child).await; anyhow::bail!("first frame timeout"); }
     }
 }
 
