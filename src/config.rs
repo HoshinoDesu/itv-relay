@@ -105,6 +105,8 @@ pub struct Congestion {
 impl Config {
     pub fn load(path: &str) -> Result<Self> {
         let raw = std::fs::read_to_string(path).with_context(|| format!("read config {path}"))?;
-        toml::from_str(&raw).context("parse config").map(|c: Config| c)
+        let c: Config = toml::from_str(&raw).context("parse config")?;
+        anyhow::ensure!(!c.ladder.is_empty(), "ladder must not be empty");
+        Ok(c)
     }
 }

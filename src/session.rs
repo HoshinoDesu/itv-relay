@@ -46,10 +46,10 @@ impl Session {
             })
             .collect();
 
-        let mut sm = StateMachine::new(CongestionCfg::from(cfg.as_ref()), max_index, ladder_bps.clone());
+        let mut cur_ladder = cfg.startup_ladder.min(max_index);
+        let mut sm = StateMachine::new(CongestionCfg::from(cfg.as_ref()), max_index, ladder_bps.clone(), cur_ladder);
 
         // active ffmpeg + 当前档
-        let mut cur_ladder = cfg.startup_ladder.min(max_index);
         let mut active: Option<Child>;
         let mut active_bps = ladder_bps[cur_ladder];
 
@@ -137,10 +137,11 @@ impl Session {
                                 channel_idx, if tag {"回退"} else {"降档"}, cur_ladder, t, drain_bps, backlog_ratio * 100.0);
                             if let Err(e) = do_hot_switch(&mut active, &cfg.ladder[t], &source, &writer).await {
                                 warn!(target: "session", "切档 spawn 失败: {e}");
+                                sm.rollback_switch();
                             } else {
                                 cur_ladder = t; active_bps = ladder_bps[t];
+                                sm.confirm_switch();
                             }
-                            sm.reset_slope();
                         }
                     }
                     Decision::StepUp(t) => {
@@ -149,10 +150,11 @@ impl Session {
                                 channel_idx, cur_ladder, t, drain_bps);
                             if let Err(e) = do_hot_switch(&mut active, &cfg.ladder[t], &source, &writer).await {
                                 warn!(target: "session", "升档 spawn 失败: {e}");
+                                sm.rollback_switch();
                             } else {
                                 cur_ladder = t; active_bps = ladder_bps[t];
+                                sm.confirm_switch();
                             }
-                            sm.reset_slope();
                         }
                     }
                     Decision::Hold => {}

@@ -111,7 +111,7 @@ pub fn build_cmd(run: &Run, source: &str) -> Command {
         .arg("1")
         .arg("pipe:1")
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .stdin(Stdio::null())
         .kill_on_drop(true);
 

@@ -10,65 +10,65 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
-// 链路估计
-const DOWN_SAFE: f64 = 0.75; // 首降: bitrate(k) ≤ link*DOWN_SAFE
-const LINK_CONFIRM_S: f64 = 2.0; // 直通期正斜率持续确认窗口
-const FILL_RATE_THRESH: f64 = 30_000.0; // pool 涨速 B/s, 超过算拥塞
-const STABLE_RATE_THRESH: f64 = 10_000.0; // pool 斜率绝对值低于此算稳态
-// 时序
-const DOWN_HOLD_S: f64 = 1.5; // 拥塞持续多久才降 (非紧急)
-const STABLE_CONFIRM_S: f64 = 12.0; // 稳态持续多久才允许升档
-const UP_PROBE_S: f64 = 12.0; // 升档观察期
-const UP_COOLDOWN_S: f64 = 20.0; // 升一档后冷却
-const DOWN_COOLDOWN_S: f64 = 8.0; // 降档后冷却
-const STABLE_PROTECT_S: f64 = 15.0; // 回退后保护期
-const PROBE_GRACE_S: f64 = 2.0; // 升档后宽限 (新 ffmpeg 起播抖动)
+const DOWN_SAFE: f64 = 0.75;
+const LINK_CONFIRM_S: f64 = 2.0;
+const FILL_RATE_THRESH: f64 = 30_000.0;
+const STABLE_RATE_THRESH: f64 = 10_000.0;
+const STABLE_CONFIRM_S: f64 = 12.0;
+const UP_PROBE_S: f64 = 12.0;
+const UP_COOLDOWN_S: f64 = 20.0;
+const STABLE_PROTECT_S: f64 = 15.0;
+const PROBE_GRACE_S: f64 = 2.0;
 const EMERGENCY_RATIO: f64 = 0.85;
-// 退避锁
 const BACKOFF_BASE_S: f64 = 60.0;
 const BACKOFF_MAX_S: f64 = 600.0;
-// 全局熔断: 连续 N 次升档失败 → 暂停升档 M 分钟
 const CONSECUTIVE_FAIL_LIMIT: u32 = 3;
-const UP_DISABLE_S: f64 = 1800.0; // 30 min
+const UP_DISABLE_S: f64 = 1800.0;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum Regime {
     Direct,
     Encode,
     Probing,
 }
 
+struct SwitchSnapshot {
+    current: usize,
+    last_stable: usize,
+    regime: Regime,
+    probe_until: Option<Instant>,
+    probe_target: Option<usize>,
+    prev_backlog_bytes: u64,
+    rate_ewma: f64,
+    stable_protect_until: Option<Instant>,
+}
+
 pub struct StateMachine {
     pub current: usize,
     pub max_index: usize,
     regime: Regime,
-    // pool 斜率 EWMA (B/s, 正=pool在涨=拥塞)
     rate_ewma: f64,
     prev_backlog_bytes: u64,
-    // 链路估计 (直通期)
     source_bps: f64,
     link_estimate: f64,
     link_confirmed: bool,
     link_confirm_accum: f64,
-    // 升档观察期
     probe_until: Option<Instant>,
     probe_target: Option<usize>,
     probe_baseline_bytes: u64,
-    // 稳态计时
     stable_accum: f64,
     down_accum: f64,
     last_stable: usize,
-    // 冷却/保护
     last_change_at: Instant,
     down_cooldown_until: Option<Instant>,
     stable_protect_until: Option<Instant>,
-    // 退避锁
     locked_until: HashMap<usize, Instant>,
     fail_count: HashMap<usize, u32>,
-    // 全局连续升档失败计数: 达 3 → 暂停升档 30min
     consecutive_up_fails: u32,
     up_disabled_until: Option<Instant>,
     ladder_bps: Vec<u64>,
+    cfg: CongestionCfg,
+    pending_snapshot: Option<SwitchSnapshot>,
 }
 
 pub enum Decision {
@@ -79,12 +79,14 @@ pub enum Decision {
 }
 
 impl StateMachine {
-    pub fn new(_cfg: crate::state::CongestionCfg, max_index: usize, ladder_bps: Vec<u64>) -> Self {
+    pub fn new(cfg: CongestionCfg, max_index: usize, ladder_bps: Vec<u64>, startup_ladder: usize) -> Self {
         let source_bps = ladder_bps.first().copied().unwrap_or(800_000) as f64;
+        let startup = startup_ladder.min(max_index);
+        let regime = if startup == 0 { Regime::Direct } else { Regime::Encode };
         Self {
-            current: 0,
+            current: startup,
             max_index,
-            regime: Regime::Direct,
+            regime,
             rate_ewma: 0.0,
             prev_backlog_bytes: 0,
             source_bps,
@@ -96,7 +98,7 @@ impl StateMachine {
             probe_baseline_bytes: 0,
             stable_accum: 0.0,
             down_accum: 0.0,
-            last_stable: 0,
+            last_stable: startup,
             last_change_at: Instant::now() - Duration::from_secs(1000),
             down_cooldown_until: None,
             stable_protect_until: None,
@@ -105,13 +107,43 @@ impl StateMachine {
             consecutive_up_fails: 0,
             up_disabled_until: None,
             ladder_bps,
+            cfg,
+            pending_snapshot: None,
         }
     }
 
-    /// 供 session 在切档 clear pool 后调用: 重置斜率基准, 防止清池产生负跳变污染 rate_ewma。
-    pub fn reset_slope(&mut self) {
+    /// 切档成功后调用: 确认状态变更 + 重置斜率基准 (pool 已被 clear)。
+    pub fn confirm_switch(&mut self) {
+        self.pending_snapshot = None;
         self.prev_backlog_bytes = 0;
         self.rate_ewma = 0.0;
+    }
+
+    /// 切档失败后调用: 回滚 update() 中预提交的 current/regime 等状态。
+    pub fn rollback_switch(&mut self) {
+        if let Some(snap) = self.pending_snapshot.take() {
+            self.current = snap.current;
+            self.last_stable = snap.last_stable;
+            self.regime = snap.regime;
+            self.probe_until = snap.probe_until;
+            self.probe_target = snap.probe_target;
+            self.prev_backlog_bytes = snap.prev_backlog_bytes;
+            self.rate_ewma = snap.rate_ewma;
+            self.stable_protect_until = snap.stable_protect_until;
+        }
+    }
+
+    fn save_snapshot(&mut self) {
+        self.pending_snapshot = Some(SwitchSnapshot {
+            current: self.current,
+            last_stable: self.last_stable,
+            regime: self.regime.clone(),
+            probe_until: self.probe_until,
+            probe_target: self.probe_target,
+            prev_backlog_bytes: self.prev_backlog_bytes,
+            rate_ewma: self.rate_ewma,
+            stable_protect_until: self.stable_protect_until,
+        });
     }
 
     pub fn update(&mut self, s: &Sample, dt: Duration, now: Instant) -> Decision {
@@ -182,6 +214,7 @@ impl StateMachine {
                 target + 1, target, self.last_stable, risen, self.rate_ewma as i64, s.backlog_ratio * 100.0);
             self.lock(now, target);
             let revert = self.last_stable.max(1).min(self.max_index);
+            self.save_snapshot();
             self.current = revert;
             self.regime = if revert == 0 { Regime::Direct } else { Regime::Encode };
             self.probe_until = None;
@@ -219,17 +252,17 @@ impl StateMachine {
         // 降档: 紧急 或 (非保护 且 非降档冷却 且 拥塞持续 hold)
         if (emergency || (congested && !protect && !cd_down)) && self.current < self.max_index {
             self.down_accum += secs;
-            if emergency || self.down_accum >= DOWN_HOLD_S {
-                // 编码 regime 链路不可测 → 只降一档
+            if emergency || self.down_accum >= self.cfg.down_hold_s {                // 编码 regime 链路不可测 → 只降一档
                 let target = (self.current + 1).min(self.max_index);
                 info!(target: "state", "↓降档 {}→{} (slope={}B/s pool={:.0}%{})",
                     self.current, target, self.rate_ewma as i64, s.backlog_ratio * 100.0,
                     if emergency {" [紧急]"} else {""});
+                self.save_snapshot();
                 self.current = target;
                 self.last_stable = target;
                 self.down_accum = 0.0;
                 self.stable_accum = 0.0;
-                self.down_cooldown_until = Some(now + Duration::from_secs_f64(DOWN_COOLDOWN_S));
+                self.down_cooldown_until = Some(now + Duration::from_secs_f64(self.cfg.down_cooldown_s));
                 self.last_change_at = now;
                 return Decision::StepDown(target);
             }
@@ -254,6 +287,7 @@ impl StateMachine {
                 if !locked {
                     info!(target: "state", "↑升档 {}→{} (slope={}B/s pool={:.0}% stable={:.1}s)",
                         self.current, target, self.rate_ewma as i64, s.backlog_ratio * 100.0, self.stable_accum);
+                    self.save_snapshot();
                     self.current = target;
                     self.regime = Regime::Probing;
                     self.probe_target = Some(target);
@@ -272,11 +306,12 @@ impl StateMachine {
     }
 
     fn enter_encode(&mut self, target: usize, now: Instant) -> Decision {
+        self.save_snapshot();
         self.current = target;
         self.last_stable = target;
         self.regime = Regime::Encode;
         self.link_confirm_accum = 0.0;
-        self.down_cooldown_until = Some(now + Duration::from_secs_f64(DOWN_COOLDOWN_S));
+        self.down_cooldown_until = Some(now + Duration::from_secs_f64(self.cfg.down_cooldown_s));
         self.last_change_at = now;
         self.down_accum = 0.0;
         self.stable_accum = 0.0;
