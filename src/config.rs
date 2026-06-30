@@ -49,7 +49,7 @@ fn default_logo_base() -> String {
     "https://fastly.jsdelivr.net/gh/fanmingming/live@main/tv".into()
 }
 fn default_startup_ladder() -> usize {
-    1 // 档1转码起播 (libx264 -g 25 强制1s IDR, 起播快)
+    0
 }
 fn default_startup_hold_s() -> f64 {
     8.0 // 起播后8s切回档0直通

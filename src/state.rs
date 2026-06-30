@@ -12,8 +12,10 @@ use tracing::{info, warn};
 
 const DOWN_SAFE: f64 = 0.75;
 const LINK_CONFIRM_S: f64 = 2.0;
-const FILL_RATE_THRESH: f64 = 30_000.0;
-const STABLE_RATE_THRESH: f64 = 10_000.0;
+const FILL_RATIO: f64 = 0.04;
+const STABLE_RATIO: f64 = 0.015;
+const EWMA_ALPHA_FAST: f64 = 0.5;
+const EWMA_ALPHA_SLOW: f64 = 0.2;
 const STABLE_CONFIRM_S: f64 = 12.0;
 const UP_PROBE_S: f64 = 12.0;
 const UP_COOLDOWN_S: f64 = 20.0;
@@ -148,19 +150,20 @@ impl StateMachine {
 
     pub fn update(&mut self, s: &Sample, dt: Duration, now: Instant) -> Decision {
         let secs = dt.as_secs_f64();
-        // pool 斜率 EWMA
+        let current_bps = self.ladder_bps.get(self.current).copied().unwrap_or(800_000) as f64;
+
+        // pool 斜率 EWMA (自适应: 拥塞时快响应, 稳态时多平滑)
         let delta = s.backlog_bytes as i64 - self.prev_backlog_bytes as i64;
         self.prev_backlog_bytes = s.backlog_bytes;
         let raw_rate = delta as f64 / secs.max(0.01);
-        self.rate_ewma = self.rate_ewma * 0.7 + raw_rate * 0.3;
+        let alpha = if raw_rate.abs() > current_bps * 0.02 { EWMA_ALPHA_FAST } else { EWMA_ALPHA_SLOW };
+        self.rate_ewma = self.rate_ewma * (1.0 - alpha) + raw_rate * alpha;
 
-        // 测源码率: 直通且 pool 空 (reader 跟得上 writer, drain 可信≈源产出)。
-        // 上界限 ladder_bps[0], 防 TCP 吸收期 drain 虚高污染。
+        // 测源码率: 直通且 pool 空 → drain ≈ 源产出, 用 EWMA 双向跟踪。
         let src_cap = self.ladder_bps.first().copied().unwrap_or(800_000) as f64;
-        if self.current == 0 && s.backlog_ratio < 0.05 && s.drain_bps as f64 > self.source_bps * 0.5 {
-            if (s.drain_bps as f64) > self.source_bps && (s.drain_bps as f64) <= src_cap {
-                self.source_bps = s.drain_bps as f64;
-            }
+        if self.current == 0 && s.backlog_ratio < 0.05 && s.drain_bps > 0 {
+            let sample = (s.drain_bps as f64).min(src_cap);
+            self.source_bps = self.source_bps * 0.8 + sample * 0.2;
         }
 
         tracing::debug!(target: "state",
@@ -177,6 +180,9 @@ impl StateMachine {
     }
 
     fn update_direct(&mut self, s: &Sample, secs: f64, now: Instant) -> Decision {
+        let current_bps = self.ladder_bps.get(self.current).copied().unwrap_or(800_000) as f64;
+        let fill_thresh = current_bps * FILL_RATIO;
+
         // 紧急 (pool 物理满): 没机会干净测链路, 用保守估计首降
         if s.backlog_ratio >= EMERGENCY_RATIO {
             let est = if self.link_confirmed { self.link_estimate } else { self.source_bps * 0.3 };
@@ -185,7 +191,7 @@ impl StateMachine {
             return self.enter_encode(target, now);
         }
         // 测链路: pool 在涨 (正斜率) 持续确认
-        if self.rate_ewma > FILL_RATE_THRESH {
+        if self.rate_ewma > fill_thresh {
             self.link_confirm_accum += secs;
             if self.link_confirm_accum >= LINK_CONFIRM_S {
                 self.link_estimate = (self.source_bps - self.rate_ewma).max(0.0);
@@ -206,9 +212,14 @@ impl StateMachine {
         let probe_end = self.probe_until.unwrap();
         let since_change = now.duration_since(self.last_change_at).as_secs_f64();
         let grace = since_change < PROBE_GRACE_S;
+
+        let target_bps = self.ladder_bps.get(target).copied().unwrap_or(800_000) as f64;
+        let fill_thresh = target_bps * FILL_RATIO;
+        let rise_limit = (target_bps * UP_PROBE_S * 0.05) as i64;
+
         // 失败: pool 字节相对 baseline 上涨超阈值, 或斜率持续>0
         let risen = s.backlog_bytes as i64 - self.probe_baseline_bytes as i64;
-        let fail = !grace && (risen > 256 * 1024 || self.rate_ewma > FILL_RATE_THRESH);
+        let fail = !grace && (risen > rise_limit || self.rate_ewma > fill_thresh);
         if fail {
             warn!(target: "state", "升档观察期失败 {}→{} 回退到稳定档{} (risen={}B slope={}B/s pool={:.0}%)",
                 target + 1, target, self.last_stable, risen, self.rate_ewma as i64, s.backlog_ratio * 100.0);
@@ -244,11 +255,15 @@ impl StateMachine {
     }
 
     fn update_encode(&mut self, s: &Sample, dt: Duration, secs: f64, now: Instant) -> Decision {
+        let current_bps = self.ladder_bps.get(self.current).copied().unwrap_or(800_000) as f64;
+        let fill_thresh = current_bps * FILL_RATIO;
+        let stable_thresh = current_bps * STABLE_RATIO;
+
         let protect = self.stable_protect_until.map(|t| now < t).unwrap_or(false);
         let cd_down = self.down_cooldown_until.map(|t| now < t).unwrap_or(false);
         // 紧急总是降
         let emergency = s.backlog_ratio >= EMERGENCY_RATIO;
-        let congested = self.rate_ewma > FILL_RATE_THRESH;
+        let congested = self.rate_ewma > fill_thresh;
         // 降档: 紧急 或 (非保护 且 非降档冷却 且 拥塞持续 hold)
         if (emergency || (congested && !protect && !cd_down)) && self.current < self.max_index {
             self.down_accum += secs;
@@ -271,7 +286,7 @@ impl StateMachine {
         }
 
         // 升档试探: 稳态 (pool 平+空) 持续确认
-        let stable = self.rate_ewma.abs() < STABLE_RATE_THRESH && s.backlog_ratio < 0.10;
+        let stable = self.rate_ewma.abs() < stable_thresh && s.backlog_ratio < 0.10;
         let cd_up = now.duration_since(self.last_change_at).as_secs_f64() < UP_COOLDOWN_S;
         // 全局熔断: 连续 3 次升档失败 → 暂停升档 30min
         let up_disabled = self.up_disabled_until.map(|t| now < t).unwrap_or(false);
