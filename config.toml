@@ -3,15 +3,18 @@
 playlist_path = "/opt/itv-relay/playlist.m3u"
 listen = "0.0.0.0:8088"
 sample_interval_s = 1.0
-# 起播档=0(直通)
-startup_ladder = 0
-startup_hold_s = 8.0
+# 起播档=1(转码快速出IDR), 网络稳定后按 startup_hold_s 试探回直通
+startup_ladder = 1
+startup_hold_s = 5.0
+switch_timeout_s = 8.0
+switch_preroll_bytes = 262144
 
 # 码率档位: 索引 0=直通(网络好), 越大越低。纯码率档, 不降分辨率 (减CPU负担)。
 # 5 档: 8M / 5M / 3M / 2M / 1M (档0直通源~8M)
 [[ladder]]
 name = "0-passthrough-8m"
 mode = "copy"
+bitrate = 8000
 
 [[ladder]]
 name = "1-1080p-5000k"
@@ -58,8 +61,9 @@ preset = "ultrafast"
 audio_bitrate = 128
 
 [congestion]
-down_ratio = 0.70
-down_hold_s = 4.0
-up_ratio = 0.95
+down_ratio = 0.90
+down_hold_s = 2.0
+up_ratio = 0.97
 up_hold_s = 15.0
+up_cooldown_s = 20.0
 down_cooldown_s = 8.0

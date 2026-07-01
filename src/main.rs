@@ -12,8 +12,8 @@ mod streambuf;
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tracing::{error, info};
 use tokio::sync::RwLock;
+use tracing::{error, info};
 
 use config::Config;
 
@@ -33,7 +33,10 @@ async fn main() -> Result<()> {
     info!(
         "config loaded: {} 档位, ladder={:?}",
         cfg.ladder.len(),
-        cfg.ladder.iter().map(|r| r.name.clone()).collect::<Vec<_>>()
+        cfg.ladder
+            .iter()
+            .map(|r| r.name.clone())
+            .collect::<Vec<_>>()
     );
 
     let channels = playlist::load(std::path::Path::new(&cfg.playlist_path))?;

@@ -61,7 +61,7 @@ async fn play(State(st): State<AppState>, AxumPath(slug): AxumPath<String>) -> R
     };
     info!(target: "server", "/play/tv-{} ({}) 启动会话", idx, display_name);
 
-    let (writer, reader) = StreamBuf::new();
+    let (writer, reader) = StreamBuf::channel();
     let session = crate::session::Session::new(idx, source, st.cfg.clone());
     tokio::spawn(async move {
         session.run(writer).await;
@@ -72,8 +72,13 @@ async fn play(State(st): State<AppState>, AxumPath(slug): AxumPath<String>) -> R
     (
         StatusCode::OK,
         [
-            (header::CONTENT_TYPE, "video/mp2t"),
-            (header::CACHE_CONTROL, "no-cache"),
+            (header::CONTENT_TYPE.as_str(), "video/mp2t"),
+            (
+                header::CACHE_CONTROL.as_str(),
+                "no-cache, no-store, must-revalidate, no-transform",
+            ),
+            (header::PRAGMA.as_str(), "no-cache"),
+            ("x-accel-buffering", "no"),
         ],
         body,
     )
