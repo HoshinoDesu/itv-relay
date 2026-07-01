@@ -123,9 +123,13 @@ impl Session {
                 }
                 Ok(n) => {
                     let chunk = buf[..n].to_vec();
-                    if !writer.send(chunk).await {
-                        debug!(target: "session", "客户端断开, 终止会话");
-                        break;
+                    match tokio::time::timeout(Duration::from_millis(50), writer.send(chunk)).await {
+                        Ok(false) => {
+                            debug!(target: "session", "客户端断开, 终止会话");
+                            break;
+                        }
+                        Ok(true) => {}
+                        Err(_) => {} // pool 满超时, 丢帧继续采样
                     }
                 }
                 Err(e) => {
