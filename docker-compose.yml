@@ -5,8 +5,7 @@ services:
     image: ghcr.io/hoshinodesu/itv-relay:latest
     container_name: itv-relay
     restart: unless-stopped
-    ports:
-      - "8088:8088"
+    network_mode: host
     volumes:
       # 把宿主机 relay 目录挂载到容器 /data, 内含 config.toml 和频道清单 m3u
       - ./relay:/data
