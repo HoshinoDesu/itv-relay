@@ -18,4 +18,3 @@
 # 运行产物
 *.log
 relay.log
-/tc-artifacts
